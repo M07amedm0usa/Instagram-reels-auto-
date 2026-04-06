@@ -1,30 +1,38 @@
-import React from 'react';
-import { useVideoConfig, AbsoluteFill, useCurrentFrame, interpolate } from 'remotion';
-import { CodeEditor } from './CodeEditor';
-import { FlutterPreview } from './FlutterPreview';
-import { Step } from './types';
+import React, { useEffect, useState } from 'react';
+import { AbsoluteFill, useVideoConfig, continueRender, delayRender } from 'remotion';
+import { Step, VideoProps } from './types';
 
-export const MyVideo: React.FC<{ stepsJsonPath: string }> = ({ stepsJsonPath }) => {
-  const { fps } = useVideoConfig();
-  const frame = useCurrentFrame();
+export const MyVideo: React.FC<VideoProps> = ({ stepsJsonPath }) => {
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [handle] = useState(() => delayRender('Loading JSON'));
 
-  // هنا بنفترض إن n8n بعت ملف الـ steps.json
-  // لو لسه مش موجود، ممكن نستخدم داتا وهمية للتجربة
-  const steps: Step[] = [
-    {
-      step: 1,
-      code: "void main() => runApp(MyApp());",
-      duration_in_frames: 150
-    }
-  ];
+  useEffect(() => {
+    fetch(stepsJsonPath)
+      .then((res) => res.json())
+      .then((data) => {
+        setSteps(data);
+        continueRender(handle);
+      })
+      .catch((err) => console.error("Error loading steps:", err));
+  }, [stepsJsonPath, handle]);
+
+  if (steps.length === 0) return null;
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#0f172a', display: 'flex', flexDirection: 'row' }}>
-      <div style={{ flex: 1, padding: '20px' }}>
-         <CodeEditor code={steps[0].code} />
+      {/* الجزء الخاص بالكود */}
+      <div style={{ flex: 1, padding: '40px', color: 'white', fontSize: '24px', background: '#1e293b' }}>
+        <pre><code>{steps[0].code}</code></pre>
       </div>
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-         <FlutterPreview step={steps[0].step} />
+      
+      {/* الجزء الخاص بمعاينة فلاتر */}
+      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#0f172a' }}>
+         <div style={{ width: '360px', height: '640px', border: '10px solid #334155', borderRadius: '40px', overflow: 'hidden' }}>
+            <iframe 
+              src={`/flutter_step_${steps[0].step}/index.html`} 
+              style={{ width: '100%', height: '100%', border: 'none' }} 
+            />
+         </div>
       </div>
     </AbsoluteFill>
   );

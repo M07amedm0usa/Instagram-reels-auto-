@@ -1,6 +1,5 @@
 import { Composition } from "remotion";
 import { MyVideo } from "./Composition";
-import "./style.css";
 
 export const RemotionRoot: React.FC = () => {
   // هنا بنقول لريموشن: لو مبعتلكش مدة، افترض إنها 300 فريم (10 ثواني) مبدئياً

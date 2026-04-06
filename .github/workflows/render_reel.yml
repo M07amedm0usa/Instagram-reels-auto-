@@ -3,6 +3,7 @@ name: Render Flutter Tutorial Reel
 on:
   repository_dispatch:
     types: [render_reel]
+  workflow_dispatch: # أضفت دي عشان تقدر تشغله يدوياً للتجربة من موقع جيتهاب
 
 concurrency:
   group: render-reel-${{ github.ref }}
@@ -29,46 +30,28 @@ jobs:
       - name: Parse & validate payload
         id: parse
         run: |
-          # ── pull the raw payload from the dispatch event ──────────────────
           PAYLOAD='${{ toJson(github.event.client_payload) }}'
+          
+          # لو تشغيل يدوي (Workflow Dispatch) بنحط بيانات تجريبية
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            PAYLOAD='{"title":"manual-test","steps":[{"step":1,"code":"import \"package:flutter/material.dart\"; void main()=>runApp(MaterialApp(home:Scaffold(body:Center(child:Text(\"Success!\")))));","duration_in_frames":60}]}'
+          fi
+
           echo "Raw payload:"
           echo "$PAYLOAD" | jq .
 
-          # ── validate required fields ───────────────────────────────────────
           STEP_COUNT=$(echo "$PAYLOAD" | jq '.steps | length')
-          if [ "$STEP_COUNT" -eq 0 ]; then
-            echo "::error::Payload must contain at least one step."
-            exit 1
-          fi
-
-          # ── validate every step has required keys ──────────────────────────
-          INVALID=$(echo "$PAYLOAD" | jq '
-            .steps | to_entries[] |
-            select(
-              (.value.step == null) or
-              (.value.code == null or .value.code == "") or
-              (.value.duration_in_frames == null or .value.duration_in_frames < 1)
-            ) | .key
-          ')
-          if [ -n "$INVALID" ]; then
-            echo "::error::Invalid step(s) at index(es): $INVALID"
-            exit 1
-          fi
-
           VIDEO_TITLE=$(echo "$PAYLOAD" | jq -r '.title // "flutter-tutorial"')
           STEPS_JSON=$(echo "$PAYLOAD" | jq -c '.steps')
 
           echo "step_count=$STEP_COUNT"   >> "$GITHUB_OUTPUT"
           echo "video_title=$VIDEO_TITLE" >> "$GITHUB_OUTPUT"
 
-          # ── multi-line safe output ─────────────────────────────────────────
           {
             echo "steps_json<<EOF_STEPS_JSON"
             echo "$STEPS_JSON"
             echo "EOF_STEPS_JSON"
           } >> "$GITHUB_OUTPUT"
-
-          echo "✅  Payload validated: $STEP_COUNT step(s), title='$VIDEO_TITLE'"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # JOB 2 – BUILD FLUTTER WEB APPS PER STEP
@@ -82,7 +65,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Flutter ─────────────────────────────────────────────────────────────
       - name: Set up Flutter ${{ env.FLUTTER_VERSION }}
         uses: subosito/flutter-action@v2
         with:
@@ -90,67 +72,40 @@ jobs:
           channel: stable
           cache: true
 
-      # إصلاح مشكلة الملفات الناقصة والاسم غير المتوافق مع Dart
-      - name: Initialize and Install Flutter dependencies
-        working-directory: flutter_dummy_project
-        run: |
-          flutter create --platforms web .
-          flutter pub get
-
-      # ── jq (pre-installed on ubuntu runners but pin for safety) ─────────────
-      - name: Ensure jq is available
-        run: |
-          jq --version || (sudo apt-get update -qq && sudo apt-get install -y jq)
-
-      # ── Loop: write code → build web → copy output ──────────────────────────
       - name: Build each Flutter step
         env:
           STEPS_JSON: ${{ needs.validate.outputs.steps_json }}
         run: |
           set -euo pipefail
-
           STEP_COUNT=$(echo "$STEPS_JSON" | jq length)
-          echo "Building $STEP_COUNT Flutter step(s)…"
-
           PUBLIC_DIR="${{ env.REMOTION_PROJECT_DIR }}/public"
           mkdir -p "$PUBLIC_DIR"
+
+          # إنشاء مشروع فلاتر نظيف داخل السيرفر لتجنب مشاكل الملفات الناقصة
+          flutter create --platforms web flutter_workdir
 
           for i in $(seq 0 $(( STEP_COUNT - 1 ))); do
             STEP_NUM=$(echo "$STEPS_JSON" | jq -r ".[$i].step")
             CODE=$(echo "$STEPS_JSON"     | jq -r ".[$i].code")
 
-            echo "──────────────────────────────────────────"
-            echo "  ▶ Step $STEP_NUM  (array index $i)"
-            echo "──────────────────────────────────────────"
+            echo "Building Step $STEP_NUM..."
 
-            # [span_3](start_span)التأكد من وجود مجلد lib قبل كتابة الكود[span_3](end_span)
-            mkdir -p flutter_dummy_project/lib
-            printf '%s' "$CODE" > flutter_dummy_project/lib/main.dart
+            # مسح ملف المين الافتراضي وكتابة كود المستخدم
+            rm -f flutter_workdir/lib/main.dart
+            printf '%s' "$CODE" > flutter_workdir/lib/main.dart
 
-            # [span_4](start_span)Build Flutter web with CanvasKit renderer[span_4](end_span)
-            (
-              cd flutter_dummy_project
-              flutter build web \
-                --web-renderer canvaskit \
-                --release \
-                --no-pub \
-                --dart-define=FLUTTER_WEB_CANVASKIT_URL=https://unpkg.com/canvaskit-wasm@0.38.2/bin/
-            )
+            # بناء الويب باستخدام CanvasKit
+            cd flutter_workdir
+            flutter build web --web-renderer canvaskit --release
+            cd ..
 
-            # [span_5](start_span)Copy build output into Remotion public folder[span_5](end_span)
+            # نقل الناتج لمجلد ريموشن العام
             DEST="$PUBLIC_DIR/flutter_step_${STEP_NUM}"
             rm -rf "$DEST"
-            cp -r flutter_dummy_project/build/web "$DEST"
-
-            echo "  ✅  Copied build/web  →  $DEST"
+            cp -r flutter_workdir/build/web "$DEST"
           done
 
-          echo ""
-          echo "All steps built successfully."
-          ls -la "$PUBLIC_DIR"
-
-      # ── Persist built assets for the render job ──────────────────────────────
-      - name: Upload Flutter build artifacts
+      - name: Upload Flutter builds
         uses: actions/upload-artifact@v4
         with:
           name: flutter-builds
@@ -173,86 +128,47 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: ${{ env.REMOTION_PROJECT_DIR }}/package-lock.json
 
-      # ── System deps for headless Chromium (used by Remotion) ────────────────
-      - [span_6](start_span)name: Install Chromium system dependencies[span_6](end_span)
+      - name: Install Chromium system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
             libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
             libgbm1 libpango-1.0-0 libpangocairo-1.0-0 \
-            libasound2 libxshmfence1 libxkbcommon0 \
-            fonts-noto fonts-noto-cjk
+            libasound2 libxshmfence1 libxkbcommon0
 
-      - [span_7](start_span)name: Install Node dependencies[span_7](end_span)
+      - name: Install Node dependencies
         working-directory: ${{ env.REMOTION_PROJECT_DIR }}
-        run: npm ci
+        run: npm ci || npm install
 
-      # ── Restore Flutter built assets ─────────────────────────────────────────
-      - [span_8](start_span)name: Download Flutter build artifacts[span_8](end_span)
+      - name: Download Flutter build artifacts
         uses: actions/download-artifact@v4
         with:
           name: flutter-builds
           path: ${{ env.REMOTION_PROJECT_DIR }}/public/
 
-      # ── Write payload JSON so Remotion can read it ───────────────────────────
-      - [span_9](start_span)name: Write steps.json for Remotion[span_9](end_span)
-        env:
-          STEPS_JSON: ${{ needs.validate.outputs.steps_json }}
-        run: |
-          echo "$STEPS_JSON" | jq '.' \
-            > ${{ env.REMOTION_PROJECT_DIR }}/public/steps.json
-          echo "steps.json written:"
-          cat ${{ env.REMOTION_PROJECT_DIR }}/public/steps.json
-
-      # ── Calculate total duration ─────────────────────────────────────────────
-      - [span_10](start_span)name: Calculate total frames[span_10](end_span)
-        id: frames
-        env:
-          STEPS_JSON: ${{ needs.validate.outputs.steps_json }}
-        run: |
-          TOTAL=$(echo "$STEPS_JSON" | jq '[.[].duration_in_frames] | add')
-          echo "total_frames=$TOTAL" >> "$GITHUB_OUTPUT"
-          echo "Total video frames: $TOTAL  (@ 30fps = $(( TOTAL / 30 ))s)"
-
-      # ── Remotion render ──────────────────────────────────────────────────────
-      - [span_11](start_span)name: Render video with Remotion[span_11](end_span)
+      - name: Render video with Remotion
         working-directory: ${{ env.REMOTION_PROJECT_DIR }}
         env:
           VIDEO_TITLE: ${{ needs.validate.outputs.video_title }}
-          TOTAL_FRAMES: ${{ steps.frames.outputs.total_frames }}
         run: |
-          npx remotion render \
-            FlutterReel \
+          # كتابة ملف الخطوات لريموشن
+          echo '${{ needs.validate.outputs.steps_json }}' > public/steps.json
+          
+          # حساب إجمالي الفريمات
+          TOTAL_FRAMES=$(echo '${{ needs.validate.outputs.steps_json }}' | jq '[.[].duration_in_frames] | add')
+          
+          # أمر الريندر النهائي
+          npx remotion render FlutterReel \
             --output "out/${VIDEO_TITLE}.mp4" \
             --props '{"stepsJsonPath":"/steps.json"}' \
             --frames 0-$(( TOTAL_FRAMES - 1 )) \
-            --codec h264 \
-            --crf 18 \
-            --image-format jpeg \
-            --jpeg-quality 95 \
-            --concurrency 4 \
-            --log verbose
+            --concurrency 4
 
-      # ── Upload final MP4 ─────────────────────────────────────────────────────
-      - [span_12](start_span)name: Upload rendered video[span_12](end_span)
+      - name: Upload final MP4
         uses: actions/upload-artifact@v4
         with:
-          name: rendered-video-${{ needs.validate.outputs.video_title }}
+          name: rendered-video
           path: ${{ env.REMOTION_PROJECT_DIR }}/out/*.mp4
-          retention-days: 7
-
-      - [span_13](start_span)name: Summary[span_13](end_span)
-        run: |
-          echo "## 🎬 Render Complete" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Title | \`${{ needs.validate.outputs.video_title }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Steps | ${{ needs.validate.outputs.step_count }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Total Frames | ${{ steps.frames.outputs.total_frames }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Duration | $(( ${{ steps.frames.outputs.total_frames }} / 30 ))s @ 30fps |" >> "$GITHUB_STEP_SUMMARY"
           

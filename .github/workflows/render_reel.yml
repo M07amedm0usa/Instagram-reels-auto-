@@ -97,6 +97,7 @@ jobs:
             # بناء الويب باستخدام CanvasKit
             cd flutter_workdir
             flutter build web --web-renderer canvaskit --release
+            --base-href /flutter_step_${STEP_NUM}/
             cd ..
 
             # نقل الناتج لمجلد ريموشن العام

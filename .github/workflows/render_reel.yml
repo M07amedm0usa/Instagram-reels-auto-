@@ -162,7 +162,7 @@ jobs:
           TOTAL_FRAMES=$(echo '${{ needs.validate.outputs.steps_json }}' | jq '[.[].duration_in_frames] | add')
           
           # أمر الريندر النهائي
-          npx remotion render FlutterReel \
+          npx remotion render MyComp \
             --output "out/${VIDEO_TITLE}.mp4" \
             --props '{"stepsJsonPath":"/steps.json"}' \
             --frames 0-$(( TOTAL_FRAMES - 1 )) \

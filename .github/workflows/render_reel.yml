@@ -94,10 +94,11 @@ jobs:
             rm -f flutter_workdir/lib/main.dart
             printf '%s' "$CODE" > flutter_workdir/lib/main.dart
 
-            # بناء الويب باستخدام CanvasKit
+                     # بناء الويب باستخدام HTML Renderer بدل CanvasKit عشان يشتغل على السيرفر
             cd flutter_workdir
-            flutter build web --web-renderer canvaskit --release --base-href /flutter_step_${STEP_NUM}/
+            flutter build web --web-renderer html --release --base-href "/flutter_step_${STEP_NUM}/"
             cd ..
+
 
             # نقل الناتج لمجلد ريموشن العام
             DEST="$PUBLIC_DIR/flutter_step_${STEP_NUM}"
